@@ -1,7 +1,7 @@
 ---
 title: "GEOG 5023 Final Project"
 author: "Isaiah Lyons-Galante & Caleb Schmitz"
-date: "2023-04-17"
+date: "2023-04-22"
 version: 2
 output: html_document
 ---
@@ -335,4 +335,14 @@ df$residuals <- residuals(basic_linear_model)
 # 
 # lm.morantest(ny.lm, ny_qw)
 ```
+## Convert point data into area data
+```{r}
+library(h3jsr)
 
+df <- sl19clean
+
+# put lat long columns first
+df <- df %>% select(LATNUM, LONGNUM, everything())
+df <- h3jsr::point_to_cell(df, res = 8, simple = FALSE)
+
+```
