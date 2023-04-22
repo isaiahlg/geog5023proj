@@ -1,0 +1,22 @@
+Spatial Data Repository and STATcompiler
+USAID-funded The Demographic and Health Surveys (DHS) Program: Produced by ICF International 
+
+This spatial Demographic and Health Surveys Program Data Package is made available
+from the Spatial Data Repository and STATcompiler under the Open Database License: http://opendatacommons.org/licenses/odbl/1.0/. 
+Any rights in individual contents of the database are licensed under the 
+Database Contents License: http://opendatacommons.org/licenses/dbcl/1.0/
+
+*********************************NOTE**********************************
+If there is no data available for a selected indicator for the selected
+survey(s), the attribute field will be "null" in geodatabase format or "9999" in shapefile format.
+Please note that survey questionnaires vary by survey type and country, therefore not all 
+indicators are available for all surveys.  Refer to the data_availability.csv file to view 
+whether the indicator(s) selected for this data package are available
+
+
+SHAPEFILE AND GEODATABASE DATA SCHEMA:
+
+CC: Two letter country code from the U.S. standard FIPS (Federal Information Processing Standard) PUB 10-4
+NAME: Country Name from the U.S. Department of State's Office of the Geographer (INR/GGI)
+REGION: The region of the world to which the country belongs
+DHSCC: Two letter DHS country code
