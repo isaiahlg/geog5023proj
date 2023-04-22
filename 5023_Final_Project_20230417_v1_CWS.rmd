@@ -1,0 +1,228 @@
+---
+title: "CSCI5622 Module 1"
+author: "IsaiahLG"
+date: "1/31/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load needed libraries
+library(rdhs)
+library(tidyverse)
+```
+## To Do List
+- Add ordering to certain factor columns
+- Filter out unknown values such as 999
+- Pull old data from Sierra Leone
+- Pull data from other countries
+
+## Import Data
+
+### Using the package rdhs
+```{r}
+# set credentials for accessing DHS API
+set_rdhs_config(email = "isaiah.lyons-galante@colorado.edu",
+                project = "Machine Learning Class Project")
+
+# figure out what DHS uses for country IDs
+ids <- dhs_countries(returnFields=c("CountryName", "DHS_CountryCode"))
+str(ids)
+
+# find all surveys for Sierra Leone
+surveys <- dhs_surveys(countryIds = c("SL"),
+                       surveyType = "DHS",
+                       surveyYearStart = 2018)
+head(surveys)
+# desired survey ID = "SL2019DHS"
+
+# find the datasets from this survey
+datasets <- dhs_datasets(surveyIds = surveys$SurveyId,
+                         fileFormat = "flat")
+head(datasets, n=20)
+# desired filename = SLHR7AFL.ZIP
+```
+
+### Download the data from DHS
+```{r}
+# download actual datasets
+downloads <- get_datasets("SLHR7AFL.ZIP")
+```
+
+### Read in downloaded dataset, write to CSV
+```{r}
+# read in the dataset
+sl19 <- readRDS(downloads$SLHR7AFL)
+# head(sl19) # 3455 columns! Yikes. 
+
+# get the variable labels for all column headers
+var_labels <- get_variable_labels(sl19)
+# head(var_labels) # 3455 rows now, just two columns, variable and description
+
+# export data and labels to CSV for visual inspection and usability in other programs
+saveRDS(var_labels, "./exports/var_labels.rds")
+saveRDS(sl19, "./exports/sl19.rds")
+
+# write to csv as well
+# write.csv(var_labels, "./exports/var_labels.csv", row.names = FALSE)
+# write.csv(sl19, "./exports/sl19.csv", row.names = FALSE)
+```
+
+## Clean up data
+
+### Chop down dataset to just section 1 and convert some columns to factors
+```{r}
+# reread in data from csv files
+sl19 <- readRDS("./exports/sl19.rds")
+var_labels <- readRDS("./exports/var_labels.rds")
+
+# drop all sections but the first one
+sl19sec1 <- sl19[,c(1:148)] 
+varSec1 <- var_labels[c(1:148),]
+
+# export
+saveRDS(sl19sec1, "./exports/sl19sec1.rds")
+saveRDS(varSec1, "./exports/varSec1.rds")
+
+# write to csv as well
+# write.csv(varSec1, "./exports/varSec1.csv", row.names = FALSE)
+# write.csv(sl19sec1, "./exports/sl19sec1.csv", row.names = FALSE)
+```
+
+### Chop down to 56 variables of interest
+```{r}
+# read in shortened RDS
+sl19sec1 <- readRDS("./exports/sl19sec1.rds")
+varSec1 <- readRDS("./exports/varSec1.rds")
+
+# columns of interest
+keep2names <- c("hv000","hv001","hv006","hv007","hv010","hv011","hv012","hv013","hv014","hv024","hv025","hv040","hv045c","hv201","hv204","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv216","hv217","hv219","hv220","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv245","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv270","hv271","hv270a","hv271a","hml1")
+
+# filter
+sl19keep <- sl19sec1[,keep2names]
+vars2keep <- varSec1[keep2names,]
+
+# convert certain columns to factors
+factorCols <- c("hv000","hv001","hv006","hv007","hv024","hv025","hv045c","hv201","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv217","hv219","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv270","hv270a")
+sl19keep <- sl19keep %>% mutate_at(factorCols, as.factor)
+
+# export to RDS
+saveRDS(vars2keep, "./exports/vars2keep.rds")
+saveRDS(sl19keep, "./exports/sl19keep.rds")
+
+# write to csv as well
+# write.csv(varSec1, "./exports/varSec1.csv", row.names = FALSE)
+# write.csv(sl19sec1, "./exports/sl19sec1.csv", row.names = FALSE)
+```
+
+## Summarize data
+
+```{r}
+# import data
+sl19keep <- readRDS("./exports/sl19keep.rds")
+n <- nrow(sl19keep)
+```
+
+Histograms
+```{r}
+# histograms
+
+hist(sl19keep$hv040, main="Altitude (m)") # altitude in meters
+plot(sl19keep$hv024, main="Region") # region
+plot(sl19keep$hv045c, main="Native Language")
+
+ilg_hist <- function(x, bins, label, fill) {
+  return(ggplot() + 
+      geom_histogram(aes(x), color="black", fill=fill, bins=bins) +
+      xlab(label) +
+      ylab("Count") +
+      ggtitle(label) +
+      theme_bw()
+  )
+}
+
+
+household <- ilg_hist(sl19keep$hv012, 33, "# Household Members", "purple")
+household
+women <- ilg_hist(sl19keep$hv010, 11, "# Women aged 15-49", "purple")
+women
+men <- ilg_hist(sl19keep$hv011, 11, "# Men aged 15-49", "purple")
+men
+children <- ilg_hist(sl19keep$hv014, 10, "# Children under 5 y.o.", "purple")
+children
+
+altitude <- ilg_hist(sl19keep$hv040, 30, "Altitude", "blue")
+altitude
+
+timetowater <- ilg_hist(sl19keep$hv204, 30, "Time to Water Source", "darkgreen")
+timetowater # filter out high "unknowns"
+```
+
+Bar Charts
+```{r}
+
+ilg_bar <- function(x, label, fill) {
+  return(ggplot() + 
+      geom_bar(aes(x), color="black", fill=fill) +
+      xlab(label) +
+      ylab("Count") +
+      ggtitle(label) +
+      theme_bw()
+  )
+}
+
+region <- ilg_bar(sl19keep$hv024, "Region", "blue")
+region
+
+language <- ilg_bar(sl19keep$hv045c, "Language", "blue")
+language
+
+watersource <- ilg_bar(sl19keep$hv201, "Source of Drinking Water", "darkgreen")
+watersource
+
+
+```
+
+Pie Charts
+```{r}
+# pie charts of asset ownership
+elec <- sum(sl19keep$hv206 == "1")
+radio <- sum(sl19keep$hv207 == "1")
+tele <- sum(sl19keep$hv208 == "1")
+fridge <- sum(sl19keep$hv209 == "1")
+bicycle <- sum(sl19keep$hv210 == "1")
+motorcycle <- sum(sl19keep$hv211 == "1")
+car <- sum(sl19keep$hv212 == "1")
+
+pie(c(elec, n-elec), labels = c("Yes", "No"), main="Have Electricity", col=c("purple","white"))
+pie(c(radio, n-radio), labels = c("Yes", "No"), main="Have Radio", col=c("purple","white"))
+pie(c(tele, n-tele), labels = c("Yes", "No"), main="Have Television", col=c("purple","white"))
+pie(c(fridge, n-fridge), labels = c("Yes", "No"), main="Have Fridge", col=c("purple","white"))
+pie(c(bicycle, n-bicycle), labels = c("Yes", "No"), main="Have Bicycle", col=c("purple","white"))
+pie(c(motorcycle, n-motorcycle), labels = c("Yes", "No"), main="Have Motorcycle", col=c("purple","white"))
+pie(c(car, n-car), labels = c("Yes", "No"), main="Have Car", col=c("purple","white"))
+```
+
+Multivariable Bar Chart
+```{r}
+# bar chart of asset ownership
+counts <- c(elec,radio,tele,fridge,bicycle,motorcycle,car)
+labels <- c("Electricity", "Radio", "Television", "Fridge", "Bicycle", "Motorcyle", "Car")
+assets <- data.frame(asset=labels, count=counts)
+ggplot(assets) +
+  geom_bar(aes(y=count, x=asset), fill="purple", stat='identity') +
+  ggtitle('Asset Ownership')+
+  xlab('Asset') +
+  ylab('Count') +
+  ylim(0,15000) + 
+  theme_bw() +
+  scale_color_brewer(palette="Dark2")+
+  geom_hline(yintercept=n, style="dashed", color="gray")
+```
+```{r}
+library(haven)
+df <- read_dta('./data/SLHR7ADT/SLHR7AFL.DTA')
+```

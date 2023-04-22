@@ -1,0 +1,263 @@
+---
+title: "GEOG 5023 Final Project"
+author: "Isaiah Lyons-Galante & Caleb Schmitz"
+date: "2023-04-17"
+version: 2
+output: html_document
+---
+
+## Setup Code
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load needed libraries
+library(rdhs)
+library(tidyverse)
+library(haven)
+library(sf)
+```
+
+## Manual Working Directory Setup
+1. Put this file in a folder called "code". This is your working directory (wd).
+2. Ensure you have the folder in the wd called "exports"
+3. Ensure you have a folder in the wd called "data"
+4. Ensure you have the folder "SLHR7ADT" inside of data, unzipped
+5. Ensure you have the folder "SLGE7AFL" inside of data, unzipped
+6. Ensure you have the folders with the regional and national boundaries as written below
+7. Run this code!
+
+## Import Data
+```{r}
+# manually read in the stata file
+sl19 <- read_dta('./data/SLHR7ADT/SLHR7AFL.DTA')
+var_labels <- get_variable_labels(sl19)
+
+# read in shapefiles of the country, regions, and survey clusters
+# https://gis.stackexchange.com/questions/19064/opening-shapefile-in-r
+
+# rad in the shapefile of the country
+country <- read_sf(dsn = "./data/sdr_national_data_2023-04-17/shps", layer = "sdr_national_data_dhs_2019")
+plot(country)
+
+# read in the shapefile of regions
+regions <- read_sf(dsn = "./data/sdr_subnational_boundaries_2023-04-17/shps", layer = "sdr_subnational_boundaries2")
+plot(regions)
+
+# read in shapefile of survey cluster coordinates
+clusters <- read_sf(dsn = "./data/SLGE7AFL", layer = "SLGE7AFL")
+plot(clusters)
+
+# "hv001" in sl19 dataframe tells us which cluster number each household belongs to
+# "DHSCLUST" in gps dataframe contains the cluster number
+# "LATNUM" and "LONGNUM" contain the coordinates of each cluster
+# we'll need to join these two dfs to create maps of the variables we're interested in
+# https://sparkbyexamples.com/r-programming/how-to-do-left-join-in-r/
+sl19gps <- merge(
+      x=sl19, 
+      y=clusters, 
+      by.x="hv001", 
+      by.y="DHSCLUST",
+      all.x=TRUE)
+
+# export useful data to exports folder
+saveRDS(country, "./exports/country.rds")
+saveRDS(regions, "./exports/regions.rds")
+saveRDS(clusters, "./exports/clusters.rds")
+saveRDS(var_labels, "./exports/var_labels.rds")
+saveRDS(sl19, "./exports/sl19.rds")
+saveRDS(sl19gps, "./exports/sl19gps.rds")
+
+
+## TODO: plot different variables from the survey using the gps coordinates of each cluster
+```
+
+## Clean up data
+
+### Chop down to 56 variables of interest
+```{r}
+# read in shortened RDS
+sl19 <- readRDS("./exports/sl19.rds")
+var_lables <- readRDS("./exports/var_labels.rds")
+
+# columns of interest
+keep2names <- c("hv000","hv001","hv006","hv007","hv010","hv011","hv012","hv013","hv014","hv024","hv025","hv040","hv045c","hv201","hv204","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv216","hv217","hv219","hv220","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv245","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv270","hv271","hv270a","hv271a","hml1")
+
+# filter
+sl19keep <- sl19[,keep2names]
+vars2keep <- var_labels[keep2names,]
+
+library(tidyverse)
+library(haven)
+# convert certain columns to factors
+factorCols <- c("hv000","hv001","hv006","hv007","hv024","hv025","hv045c","hv201","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv217","hv219","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv270","hv270a")
+sl19keep <- sl19keep %>% mutate_at(factorCols, as.factor)
+
+# export to RDS
+saveRDS(vars2keep, "./exports/vars2keep.rds")
+saveRDS(sl19keep, "./exports/sl19keep.rds")
+```
+
+## Summarize data
+
+```{r}
+# import data
+sl19keep <- readRDS("./exports/sl19keep.rds")
+n <- nrow(sl19keep)
+```
+
+Histograms
+```{r}
+# histograms
+
+hist(sl19keep$hv040, main="Altitude (m)") # altitude in meters
+plot(sl19keep$hv024, main="Region") # region
+plot(sl19keep$hv045c, main="Native Language")
+
+ilg_hist <- function(x, bins, label, fill) {
+  return(ggplot() + 
+      geom_histogram(aes(x), color="black", fill=fill, bins=bins) +
+      xlab(label) +
+      ylab("Count") +
+      ggtitle(label) +
+      theme_bw()
+  )
+}
+
+
+household <- ilg_hist(sl19keep$hv012, 33, "# Household Members", "purple")
+household
+women <- ilg_hist(sl19keep$hv010, 11, "# Women aged 15-49", "purple")
+women
+men <- ilg_hist(sl19keep$hv011, 11, "# Men aged 15-49", "purple")
+men
+children <- ilg_hist(sl19keep$hv014, 10, "# Children under 5 y.o.", "purple")
+children
+
+altitude <- ilg_hist(sl19keep$hv040, 30, "Altitude", "blue")
+altitude
+
+timetowater <- ilg_hist(sl19keep$hv204, 30, "Time to Water Source", "darkgreen")
+timetowater # filter out high "unknowns"
+```
+
+Bar Charts
+```{r}
+
+ilg_bar <- function(x, label, fill) {
+  return(ggplot() + 
+      geom_bar(aes(x), color="black", fill=fill) +
+      xlab(label) +
+      ylab("Count") +
+      ggtitle(label) +
+      theme_bw()
+  )
+}
+
+region <- ilg_bar(sl19keep$hv024, "Region", "blue")
+region
+
+language <- ilg_bar(sl19keep$hv045c, "Language", "blue")
+language
+
+watersource <- ilg_bar(sl19keep$hv201, "Source of Drinking Water", "darkgreen")
+watersource
+
+
+```
+
+Pie Charts
+```{r}
+# pie charts of asset ownership
+elec <- sum(sl19keep$hv206 == "1")
+radio <- sum(sl19keep$hv207 == "1")
+tele <- sum(sl19keep$hv208 == "1")
+fridge <- sum(sl19keep$hv209 == "1")
+bicycle <- sum(sl19keep$hv210 == "1")
+motorcycle <- sum(sl19keep$hv211 == "1")
+car <- sum(sl19keep$hv212 == "1")
+
+pie(c(elec, n-elec), labels = c("Yes", "No"), main="Have Electricity", col=c("purple","white"))
+pie(c(radio, n-radio), labels = c("Yes", "No"), main="Have Radio", col=c("purple","white"))
+pie(c(tele, n-tele), labels = c("Yes", "No"), main="Have Television", col=c("purple","white"))
+pie(c(fridge, n-fridge), labels = c("Yes", "No"), main="Have Fridge", col=c("purple","white"))
+pie(c(bicycle, n-bicycle), labels = c("Yes", "No"), main="Have Bicycle", col=c("purple","white"))
+pie(c(motorcycle, n-motorcycle), labels = c("Yes", "No"), main="Have Motorcycle", col=c("purple","white"))
+pie(c(car, n-car), labels = c("Yes", "No"), main="Have Car", col=c("purple","white"))
+```
+
+Multivariable Bar Chart
+```{r}
+# bar chart of asset ownership
+counts <- c(elec,radio,tele,fridge,bicycle,motorcycle,car)
+labels <- c("Electricity", "Radio", "Television", "Fridge", "Bicycle", "Motorcyle", "Car")
+assets <- data.frame(asset=labels, count=counts)
+ggplot(assets) +
+  geom_bar(aes(y=count, x=asset), fill="purple", stat='identity') +
+  ggtitle('Asset Ownership')+
+  xlab('Asset') +
+  ylab('Count') +
+  ylim(0,15000) + 
+  theme_bw() +
+  scale_color_brewer(palette="Dark2")+
+  geom_hline(yintercept=n, style="dashed", color="gray")
+```
+
+
+
+
+
+
+## Old Code Not Needed Anymore
+```{r}
+#### OLD CODE NO LONGER NEEDED, KEEPING FOR REFERENCE ##############
+
+############### GET DATA FROM API
+# # set credentials for accessing DHS API
+# set_rdhs_config(email = "isaiah.lyons-galante@colorado.edu",
+#                 project = "Machine Learning Class Project")
+# 
+# # figure out what DHS uses for country IDs
+# ids <- dhs_countries(returnFields=c("CountryName", "DHS_CountryCode"))
+# str(ids)
+# 
+# # find all surveys for Sierra Leone
+# surveys <- dhs_surveys(countryIds = c("SL"),
+#                        surveyType = "DHS",
+#                        surveyYearStart = 2018)
+# head(surveys)
+# # desired survey ID = "SL2019DHS"
+# 
+# # find the datasets from this survey
+# datasets <- dhs_datasets(surveyIds = surveys$SurveyId,
+#                          fileFormat = "flat")
+# head(datasets, n=20)
+# # desired filename = SLHR7AFL.ZIP
+
+##########################
+
+# # RDHS way to manually read in file from the Zip folder
+# # https://rdrr.io/cran/rdhs/man/read_dhs_dta.html
+# df <- read_dhs_dta('./data/SLHR7ADT.zip', mode = "haven", all_lower = TRUE)
+# 
+# # manually read in the stata file
+# library(haven)
+# df <- read_dta('./data/SLHR7ADT/SLHR7AFL.DTA')
+# 
+# # read in .dbf file from coordinates
+# library(foreign)
+# gps <- read.dbf('./data/SLGE7AFL/SLGE7AFL.dbf', as.is = FALSE)
+# # "hv001" in sl19 dataframe tells us which cluster number each household belongs to
+# # "DHSCLUST" in gps dataframe contains the cluster number
+# # "LATNUM" and "LONGNUM" contain the coordinates of each cluster
+# # we'll need to join these two dfs to create maps of the variables we're interested in
+# 
+# # pull in the geometry of the regions from the survey
+# geo <- dhs_geometry(
+#   surveyIds = 'SL2019DHS',
+#   all_results = TRUE
+# )
+# plot(geo)
+```
+
