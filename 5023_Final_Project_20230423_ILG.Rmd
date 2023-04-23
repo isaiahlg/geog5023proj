@@ -1,7 +1,7 @@
 ---
 title: "GEOG 5023 Final Project"
 author: "Isaiah Lyons-Galante & Caleb Schmitz"
-date: "2023-04-22"
+date: "2023-04-23"
 version: 2
 output: html_document
 ---
@@ -334,4 +334,86 @@ df$residuals <- residuals(basic_linear_model)
 # ny_qw <- nb2listw(queen)
 # 
 # lm.morantest(ny.lm, ny_qw)
+```
+## Convert point data into area data
+```{r}
+# reread in dataframe
+sl19clean <- readRDS("./exports/sl19clean.rds")
+df <- sl19clean
+
+
+# define columns to keep
+assetColumns <- c("hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
+gpsColumns <- c("LATNUM", "LONGNUM", "ALT_DEM")
+srColumns <- c(assetColumns, gpsColumns)
+
+
+# filter big data frame to just columns needed for this
+df <- df[,srColumns]
+
+# convert all columns to numeric
+df <- as.data.frame(lapply(df, as.numeric)) 
+
+# add geometry back in
+df$geometry <- sl19clean$geometry
+
+# filter out "unknown" or "missing" values from survey
+df <- na.omit(df) # remove NA values
+df <- df %>% filter(
+  hv246a < 95 &
+  hv246b < 95 &
+  hv246c < 95 &
+  hv246d < 95 &
+  hv246e < 95 &
+  hv246f < 95
+)
+
+
+# remove geometry again
+geometry <- df$geometry
+df = select(df, -geometry)
+
+# aggregate data to cluster level, keep means of other variables
+df <- aggregate.data.frame(df, list(lat = df$LATNUM, lon = df$LONGNUM), mean)
+sl19clusters <- df
+
+# read in country and regions
+regions <- readRDS("./exports/regions.rds")
+country <- readRDS("./exports/country.rds")
+
+# convert the countries shapefile (sf) into SpatialPolygon (sp)
+library(geojsonsf)
+country.sp <- as(country, 'Spatial')
+
+# create voronoi tesselation plot
+library(ggvoronoi)
+ggplot(df) + 
+  geom_voronoi(aes(lon, lat, fill=hv271), outline = country.sp) + 
+  scale_fill_gradient(low="white", high="blue") +
+  geom_sf(data=regions, fill=NA, color="black") +
+  ggtitle("Voronoi Tesellation of Sierra Leone")
+
+# create voronoi tesselation SpatialPolygon
+areas.sp <- voronoi_polygon(df, x="lon", y="lat", outline = country.sp)
+
+# convert voronoi SpatialPolygon to a shapefile
+library(sf)
+areas.sf <- st_as_sf(areas.sp)
+plot(areas.sf)
+ggplot(data=areas.sf) +
+  geom_sf(aes(fill=hv271)) +
+  scale_fill_gradient(low="white", high="navyblue") +
+  ggtitle("Wealth Voronoi Tesellation of Sierra Leone #2") +
+  theme_void()
+
+ggplot(data=areas.sf) +
+  geom_sf(aes(fill=hv206)) +
+  scale_fill_gradient(low="white", high="orange") +
+  ggtitle("% with Electricity Access in Sierra Leone") +
+  theme_void()
+
+# export area
+saveRDS(areas.sf, "./exports/areas.rds")   
+saveRDS(sl19clusters, "./exports/sl19clusters.rds")   
+
 ```
