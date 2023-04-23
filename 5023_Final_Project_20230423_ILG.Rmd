@@ -16,9 +16,11 @@ knitr::opts_chunk$set(echo = TRUE)
 library(rdhs)
 library(tidyverse)
 library(haven)
-library(sf)
+# library(sf)
 library(gstat)
-library(spdep)
+# library(spdep)
+library(geojsonsf) # for convert shapefile into sp
+library(ggvoronoi)
 ```
 
 ## Manual Working Directory Setup
@@ -157,8 +159,7 @@ keep2names <- c("hv000","hv001","hv006","hv007","hv010","hv011","hv012","hv013",
 sl19keep <- sl19[,keep2names]
 vars2keep <- var_labels[keep2names,]
 
-library(tidyverse)
-library(haven)
+
 # convert certain columns to factors
 factorCols <- c("hv000","hv001","hv006","hv007","hv024","hv025","hv045c","hv201","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv217","hv219","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv270","hv270a")
 sl19keep <- sl19keep %>% mutate_at(factorCols, as.factor)
@@ -315,25 +316,6 @@ summary(df)
 geometry <- df$geometry
 df = select(df, -geometry)
 
-# basic linear model
-basic_linear_model <- lm(hv271 ~ ., data=df)
-summary(basic_linear_model)
-
-# map residuals
-df$geometry <- geometry
-df$residuals <- residuals(basic_linear_model)
-
-# to do DEBUG
-# ggplot(df) + 
-#   geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
-#   scale_fill_gradient2() +
-#   ggtitle("Map of Model Residuals")
-
-# define neighors
-# queen <- poly2nb(df)
-# ny_qw <- nb2listw(queen)
-# 
-# lm.morantest(ny.lm, ny_qw)
 ```
 ## Convert point data into area data
 ```{r}
@@ -382,23 +364,22 @@ regions <- readRDS("./exports/regions.rds")
 country <- readRDS("./exports/country.rds")
 
 # convert the countries shapefile (sf) into SpatialPolygon (sp)
-library(geojsonsf)
+
 country.sp <- as(country, 'Spatial')
 
 # create voronoi tesselation plot
-library(ggvoronoi)
+
 ggplot(df) + 
-  geom_voronoi(aes(lon, lat, fill=hv271), outline = country.sp) + 
+  ggvoronoi::geom_voronoi(aes(lon, lat, fill=hv271), outline = country.sp) + 
   scale_fill_gradient(low="white", high="blue") +
   geom_sf(data=regions, fill=NA, color="black") +
   ggtitle("Voronoi Tesellation of Sierra Leone")
 
 # create voronoi tesselation SpatialPolygon
-areas.sp <- voronoi_polygon(df, x="lon", y="lat", outline = country.sp)
+areas.sp <- ggvoronoi::voronoi_polygon(df, x="lon", y="lat", outline = country.sp)
 
 # convert voronoi SpatialPolygon to a shapefile
-library(sf)
-areas.sf <- st_as_sf(areas.sp)
+areas.sf <- sf::st_as_sf(areas.sp)
 plot(areas.sf)
 ggplot(data=areas.sf) +
   geom_sf(aes(fill=hv271)) +
@@ -417,3 +398,44 @@ saveRDS(areas.sf, "./exports/areas.rds")
 saveRDS(sl19clusters, "./exports/sl19clusters.rds")   
 
 ```
+## Linear Regression
+```{r}
+# import dataframe with shape file
+sl19areas <- readRDS("./exports/areas.rds")
+sl19clusters <- readRDS("./exports/sl19clusters.rds")
+
+# keep just asset columns 
+geometry <- sl19areas$geometry
+assetColumns <- c("hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
+sl19num <- sl19clusters[,assetColumns]
+
+# normalize data to mean 1, std dev 1
+sl19scaled <- as.data.frame(scale(sl19num))
+
+# basic linear model
+df <- sl19scaled
+basic_linear_model <- lm(hv271 ~ ., data=df)
+summary(basic_linear_model)
+
+# map residuals
+df$geometry <- geometry
+df$residuals <- residuals(basic_linear_model)
+ggplot(df) +
+  geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
+  scale_fill_gradient2() +
+  ggtitle("Map of Model Residuals")
+
+# histogram of residuals
+ggplot(df) +
+  geom_histogram(aes(residuals), fill="blue", bins = 20)
+
+# check for spatial autocorrelation of residuals
+# define neighors
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+
+library(spdep)
+spdep::lm.morantest(basic_linear_model, queen_weights)
+```
+##
+
