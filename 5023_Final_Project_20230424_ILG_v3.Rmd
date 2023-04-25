@@ -18,6 +18,7 @@ library(tidyverse) # for data manipulation
 library(haven) # for handling labelled columns
 library(sf) # for handling shapefiles
 library(gstat) # for mapping and krigging
+library(sp) # for coordinate transformations
 
 library(spdep) # for getting area data weights
 library(geojsonsf) # for converting shapefile into sp
@@ -463,7 +464,10 @@ saveRDS(areas.sf, "./exports/areas.rds")
 saveRDS(sl19clusters, "./exports/sl19clusters.rds")   
 
 ```
+
 ## Linear Regression
+
+### Cut Down Dataframe to Numeric Columns
 ```{r}
 # import dataframe with shape file
 sl19areas <- readRDS("./exports/areas.rds")
@@ -471,10 +475,21 @@ sl19areas <- readRDS("./exports/areas.rds")
 # keep just asset columns 
 assetColumns <- c("hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
 sl19num <- sl19areas[,assetColumns]
+
+# remove rows that have no neighbors
+df <- df[-c(47, 68), ]
+
+# save down dataframe
 saveRDS(sl19num, "./exports/sl19num.rds")
+```
+
+### Basic Multiple Linear Regression
+```{r}
+# read in numeric dataframe
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
 
 # process df for lm
-df <- sl19num
 geometry <- df$geometry
 df <- df %>% st_drop_geometry()
 
@@ -483,6 +498,9 @@ lm.basic <- lm(hv271 ~ ., data=df)
 summary(lm.basic)
 # adjusted R-squared is 0.9484
 # r-squared is 0.9505
+
+# check for spatial autocorrelation of residuals
+spdep::lm.morantest(lm.basic, queen_weights)
 
 # map residuals
 df$geometry <- geometry
@@ -494,7 +512,7 @@ ggplot(df) +
 
 # histogram of residuals
 ggplot(df) +
-  geom_histogram(aes(residuals), fill="blue", bins = 20)
+  geom_histogram(aes(residuals), fill="blue", bins = 15)
 
 # try cross validation
 set.seed(44)
@@ -529,18 +547,33 @@ df <- df[,vsigColumns]
 lm.cv.improved <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
 print(lm.cv.improved) # RMSE 20902
 
-# try training on one part, testing on the other
+# save down significant columns df
+df$geometry <- geometry
+sl19lm <- df
+saveRDS(sl19lm, "./exports/sl19lm.rds")
+```
+
+### Linear Regression with a Train/Test Split
+```{r}
+# read in data
+sl19num <- readRDS("./exports/sl19num.rds")
 df <- sl19num
+
+# split train / test data
 f = 4/5
 n = nrow(df)
 set.seed(44)
 train <- sample(n, n*f, replace=FALSE)
 traindf <- df[train,]
 testdf <- df[-train,]
+
+# prep for lm
 geometry <- testdf$geometry
 traindf <- traindf %>% st_drop_geometry()
 testdf <- testdf %>% st_drop_geometry()
 df <- traindf
+
+# run lm
 lm.train <- lm(hv271 ~ ., data=df)
 summary(lm.train)
 pred.lm <- predict(object = lm.train, newdata = testdf)
@@ -548,16 +581,29 @@ rmse.lm <- rmse(actual = testdf$hv271, predicted = pred.lm )
 print(rmse.lm) # RMSE 22393 (worse than CV)
 
 # try a test/train split again with fewer columns
+vsigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
 df <- traindf[,vsigColumns]
 testdf <- testdf[,vsigColumns]
 lm.train.improved <- lm(hv271 ~ ., data=df)
-summary(lm.train.improved)
+summary(lm.train.improved) # R2 0.9531
 pred.lm.improved <- predict(object = lm.train.improved, newdata = testdf)
 rmse.lm.improved <- rmse(actual = testdf$hv271, predicted = pred.lm.improved )
 print(rmse.lm.improved) # RMSE 22619 (not better)
+
+# try a test/train split with few columns and cross validation
+df <- traindf[,vsigColumns]
+testdf <- testdf[,vsigColumns]
+cv <- trainControl(method = 'cv', number = 5)
+lm.cv.train <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
+print(lm.cv.train) # RMSE 20651, R-squared 0.9487
+pred.lm.cv.train <- predict(object = lm.cv.train, newdata = testdf)
+rmse.lm.cv.train <- rmse(actual = testdf$hv271, predicted = pred.lm.cv.train )
+print(rmse.lm.cv.train) # RMSE 22619.46 (not better - exactly the same as 80/20)
 ```
 
 ## Spatial Regression
+
+### Spatial Lag Model
 ```{r}
 # get same data as for regression models
 sl19num <- readRDS("./exports/sl19num.rds")
@@ -568,18 +614,181 @@ geometry <- df$geometry
 queen_neighbors <- spdep::poly2nb(geometry)
 queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
 
-# check for spatial autocorrelation of residuals
-spdep::lm.morantest(lm.basic, queen_weights)
-
 # spatial lag model
 df <- df %>% st_drop_geometry()
 lm.lag <- lagsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
 summary(lm.lag)
+# AIC 12040 instead of 12104 for lm
+# ro = 0.1864, p-value << 0.05
 
-# rerun spatial lag model with fewer variables
-sigColumns <- c("")
+# map residuals
+df$geometry <- geometry
+df$residuals <- residuals(lm.lag)
+ggplot(df) +
+  geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
+  scale_fill_gradient2() +
+  ggtitle("Map of Spatial Model Residuals")
+
+# histogram of residuals
+ggplot(df) +
+  geom_histogram(aes(residuals), fill="blue", bins = 15)
+
+# pull out significant columns from spatial model
+spSigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+# same as vsigColumns from non-spatial model
+
+# rerun model with fewer columns
+df <- df[,spSigColumns]
+lm.lag.improved <- lagsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.lag.improved)
+# AIC 12038 instead of 12100 for lm
+# ro = 0.18041, p-value << 0.05
+```
+
+### Spatial Error Model
+```{r}
+# get same data as for regression models
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+geometry <- df$geometry
+df <- st_drop_geometry(df)
+
+# define neighbors & weights
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+
+# try spatial error model
+lm.err <- errorsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.err)
+# AIC 12030 instead of 12104 for lm
+# lambda = 0.53617, p-value << 0.05
+
+# pull out significant columns from spatial model
+spSigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+# same as vsigColumns from non-spatial model
+
+# rerun model with fewer columns
+df <- df[,spSigColumns]
+lm.err.improved <- errorsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.err.improved)
+# AIC 12030 instead of 12100 for lm
+# lamda = 0.5018, p-value << 0.05
+```
+### Run Significance Tests
+```{r}
+# read in lm dataframe
+sl19lm <- readRDS("./exports/sl19lm.rds")
+df <- sl19lm
+df <- df[-c(47, 68), ] # try removing regions with no neighbors
+geometry <- df$geometry
+df = select(df, -geometry)
+
+# define neighbors & weights
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+
+# basic linear model
+lm.basic <- lm(hv271 ~ ., data=df)
+
+# run lm tests
+lmtests <- lm.LMtests(lm.basic, listw=queen_weights, test="all")
+summary(lmtests)
+## all very significant! 
+
+# statistic parameter      p.value    
+# LMerr     77.846         1 < 2.2e-16 ***
+# LMlag     65.565         1 5.551e-16 ***
+# RLMerr    41.468         1 1.198e-10 ***
+# RLMlag    29.186         1 6.574e-08 ***
+
+# RLMerr has a p-value 600X smaller than RLM lag, so we'll go with the spatial error model!
+# I guess this tells us that there's systematic bias in the errors that we're not accounting for. Likely from ommitted variables....probably the categorical variables that I wasn't able to include.
+```
+
+### Geographically Weighted Regression
+```{r}
+# import sf dataframe 
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+
+# cut down to significant columns
+spSigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- df[,spSigColumns]
+
+# convert to a spatial polygon df
+df.sp <- as(df, "Spatial")
+
+# find the right bandwidth for gwr
+bw <- bw.gwr(hv271 ~ ., data = df.sp, adaptive=T)
+bw # 385
+
+# run gwr
+lm.gwr <- gwr.basic(hv271 ~ ., data=df.sp, bw=bw, kernel="gaussian", adaptive=TRUE)
+lm.gwr
+
+# Map GWR Coefficients Across the Country
+
+# electricity
+df$gwr_hv206 <- lm.gwr$SDF$hv206
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv206)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Electricity Coefficients")
+# this means that electricity is a better predictor of wealth the farther we get from Freetown
+
+# radio
+df$gwr_hv207 <- lm.gwr$SDF$hv207
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv207)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Radio Coefficients")
+
+# tv
+df$gwr_hv208 <- lm.gwr$SDF$hv208
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv208)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR TV Coefficients")
+
+# mobile phone
+df$gwr_hv243a <- lm.gwr$SDF$hv243a
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv243a)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Mobile Phone Coefficients")
+
+# horses / donkeys / mules
+df$gwr_hv246c <- lm.gwr$SDF$hv246c
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv246c)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Horse/Donkey/Mule Coefficients")
+
+# goats
+df$gwr_hv246d <- lm.gwr$SDF$hv246d
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv246d)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Goats Coefficients")
+# woah, owning goats means you're poor! But more so in the more urban, western region
+
+# chickens
+df$gwr_hv246f <- lm.gwr$SDF$hv246f
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv246f)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Chicken Coefficients")
+# woah, very negatively correlated with wealth! everywhere.
+
+# bank account
+df$gwr_hv247 <- lm.gwr$SDF$hv247
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv247)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Bank Account Coefficients")
 
 ```
+
 ## Decision Trees
 
 ```{r}
