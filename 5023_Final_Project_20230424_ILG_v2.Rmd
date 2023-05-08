@@ -471,22 +471,22 @@ sl19areas <- readRDS("./exports/areas.rds")
 # keep just asset columns 
 assetColumns <- c("hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
 sl19num <- sl19areas[,assetColumns]
+saveRDS(sl19num, "./exports/sl19num.rds")
 
-# drop geometry column too
-geometry <- sl19areas$geometry
-sl19num <- sl19num %>% st_drop_geometry()
-
-# normalize data to mean 1, std dev 1
-sl19scaled <- as.data.frame(scale(sl19num))
+# process df for lm
+df <- sl19num
+geometry <- df$geometry
+df <- df %>% st_drop_geometry()
 
 # basic linear model
-df <- sl19scaled
-basic_linear_model <- lm(hv271 ~ ., data=df)
-summary(basic_linear_model)
+lm.basic <- lm(hv271 ~ ., data=df)
+summary(lm.basic)
+# adjusted R-squared is 0.9484
+# r-squared is 0.9505
 
 # map residuals
 df$geometry <- geometry
-df$residuals <- residuals(basic_linear_model)
+df$residuals <- residuals(lm.basic)
 ggplot(df) +
   geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
   scale_fill_gradient2() +
@@ -495,26 +495,89 @@ ggplot(df) +
 # histogram of residuals
 ggplot(df) +
   geom_histogram(aes(residuals), fill="blue", bins = 20)
+
+# try cross validation
+set.seed(44)
+df <- sl19num
+geometry <- df$geometry
+df <- df %>% st_drop_geometry()
+cv <- trainControl(method = 'cv', number = 5)
+lm.cv <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
+print(lm.cv) # RMSE 21674
+
+# try again without variables p > 0.5
+sigColumns <- c("hv206","hv207","hv208","hv209","hv210","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
+df <- df[,sigColumns]
+lm.improved <- lm(hv271 ~ ., data=df)
+summary(lm.improved)
+# adjusted R-squared goes up to 0.9487
+# r-squared stays up at 0.9504
+
+# try again without variables p > 0.05
+vsigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- df[,vsigColumns]
+lm.vimproved <- lm(hv271 ~ ., data=df)
+summary(lm.vimproved) 
+# adjusted R-squared goes up to 0.9517
+# r-squared goes up at 0.9531!
+# much better model
+
+# try cross validation again with smaller model
+set.seed(44)
+vsigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- df[,vsigColumns]
+lm.cv.improved <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
+print(lm.cv.improved) # RMSE 20902
+
+# try training on one part, testing on the other
+df <- sl19num
+f = 4/5
+n = nrow(df)
+set.seed(44)
+train <- sample(n, n*f, replace=FALSE)
+traindf <- df[train,]
+testdf <- df[-train,]
+geometry <- testdf$geometry
+traindf <- traindf %>% st_drop_geometry()
+testdf <- testdf %>% st_drop_geometry()
+df <- traindf
+lm.train <- lm(hv271 ~ ., data=df)
+summary(lm.train)
+pred.lm <- predict(object = lm.train, newdata = testdf)
+rmse.lm <- rmse(actual = testdf$hv271, predicted = pred.lm )
+print(rmse.lm) # RMSE 22393 (worse than CV)
+
+# try a test/train split again with fewer columns
+df <- traindf[,vsigColumns]
+testdf <- testdf[,vsigColumns]
+lm.train.improved <- lm(hv271 ~ ., data=df)
+summary(lm.train.improved)
+pred.lm.improved <- predict(object = lm.train.improved, newdata = testdf)
+rmse.lm.improved <- rmse(actual = testdf$hv271, predicted = pred.lm.improved )
+print(rmse.lm.improved) # RMSE 22619 (not better)
 ```
 
 ## Spatial Regression
 ```{r}
-# check for spatial autocorrelation of residuals
-# define neighors
+# get same data as for regression models
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+geometry <- df$geometry
+
+# define neighbors & weights
 queen_neighbors <- spdep::poly2nb(geometry)
 queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
 
-spdep::lm.morantest(basic_linear_model, queen_weights)
+# check for spatial autocorrelation of residuals
+spdep::lm.morantest(lm.basic, queen_weights)
 
 # spatial lag model
-# df <- df %>% st_drop_geometry()
-df <- df %>% select(-c("geometry", "residuals"))
-spatial_lag_model <- lagsarlm(hv271 ~ .,
-                   data=df,
-                   queen_weights, 
-                   zero.policy = TRUE)
+df <- df %>% st_drop_geometry()
+lm.lag <- lagsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.lag)
 
-summary(spatial_lag_model)
+# rerun spatial lag model with fewer variables
+sigColumns <- c("")
 
 ```
 ## Decision Trees
@@ -546,12 +609,14 @@ testdf <- df[-train,]
 
 # Decision Tree with 5-Fold Cross Validation
 cv <- trainControl(method = 'cv', number = 5)
-dt <- train(hv271 ~ ., data=df, method="rpart", trControl = cv)
-print(dt)
-rpart.plot(dt$finalModel, main="Decision Tree with 5-Fold Cross Validation")
+dt1 <- train(hv271 ~ ., data=df, method="rpart", trControl = cv)
+print(dt1)
+rpart.plot(dt1$finalModel, main="Decision Tree with 5-Fold Cross Validation")
+pred1 <- predict(object = dt1, newdata = testdf)
+rmse1 <- rmse(actual = testdf$hv271, predicted = pred1 )
+rmse1
 
 ## DTree without Cross Validation (manually set cp=0.005) 
-control <- rpart.control(minsplit = 1, minbucket = 1, maxdepth = 10)
 cp2 <- 0.005
 dt2 <- rpart(hv271 ~ ., data = traindf, cp=cp2, method="anova")
 summary(dt2)
@@ -561,8 +626,7 @@ rmse2 <- rmse(actual = testdf$hv271, predicted = pred2 )
 rmse2
 dt2$variable.importance
 
-## Deeper DTree without Cross Validation (manually set cp=0.001) for nice in between
-control <- rpart.control(minsplit = 1, minbucket = 1, maxdepth = 10)
+## Deeper DTree without Cross Validation (manually set cp=0.001) for more depth
 cp3 <- 0.001
 dt3 <- rpart(hv271 ~ ., data = traindf, cp=cp3, method="anova")
 summary(dt3)

@@ -1,0 +1,925 @@
+---
+title: "GEOG 5023 Final Project"
+author: "Isaiah Lyons-Galante & Caleb Schmitz"
+date: "2023-04-23"
+version: 2
+output: html_document
+---
+
+## Setup Code
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+```{r}
+library(rdhs) # for importing data from the API
+library(tidyverse) # for data manipulation
+library(haven) # for handling labelled columns
+library(sf) # for handling shapefiles
+library(gstat) # for mapping and krigging
+library(sp) # for coordinate transformations
+
+library(spdep) # for getting area data weights
+library(geojsonsf) # for converting shapefile into sp
+library(ggvoronoi) # for tiling point data into area data
+library(spatialreg) # for spatial regression
+library(GWmodel) # for geographically weighted regression 
+
+library(caret) # decision tree with cross validation
+library(rpart) # decision tree without cross validation
+library(rpart.plot) # for plotting dtree results
+library(Metrics) # for testing models
+```
+
+## Manual Working Directory Setup
+1. Put this file in a folder called "code". This is your working directory (wd).
+2. Ensure you have the folder in the wd called "exports"
+3. Ensure you have a folder in the wd called "data"
+4. Ensure you have the folder "SLHR7ADT" inside of data, unzipped
+5. Ensure you have the folder "SLGE7AFL" inside of data, unzipped
+6. Ensure you have the folders with the regional and national boundaries as written below
+7. Run this code!
+
+## Import Data
+```{r}
+# manually read in the stata file
+sl19 <- read_dta('./data/SLHR7ADT/SLHR7AFL.DTA')
+var_labels <- get_variable_labels(sl19)
+
+# read in shapefiles of the country, regions, and survey clusters
+# https://gis.stackexchange.com/questions/19064/opening-shapefile-in-r
+
+# rad in the shapefile of the country
+country <- read_sf(dsn = "./data/sdr_national_data_2023-04-17/shps", layer = "sdr_national_data_dhs_2019")
+plot(country)
+
+# read in the shapefile of regions
+regions <- read_sf(dsn = "./data/sdr_subnational_boundaries_2023-04-17/shps", layer = "sdr_subnational_boundaries2")
+plot(regions)
+
+# read in shapefile of survey cluster coordinates
+clusters <- read_sf(dsn = "./data/SLGE7AFL", layer = "SLGE7AFL")
+plot(clusters)
+
+# "hv001" in sl19 dataframe tells us which cluster number each household belongs to
+# "DHSCLUST" in gps dataframe contains the cluster number
+# "LATNUM" and "LONGNUM" contain the coordinates of each cluster
+# we'll need to join these two dfs to create maps of the variables we're interested in
+# https://sparkbyexamples.com/r-programming/how-to-do-left-join-in-r/
+sl19gps <- merge(
+      x=sl19, 
+      y=clusters, 
+      by.x="hv001", 
+      by.y="DHSCLUST",
+      all.x=TRUE)
+
+# export useful data to exports folder
+saveRDS(country, "./exports/country.rds")
+saveRDS(regions, "./exports/regions.rds")
+saveRDS(clusters, "./exports/clusters.rds")
+saveRDS(var_labels, "./exports/var_labels.rds")
+saveRDS(sl19, "./exports/sl19.rds")
+saveRDS(sl19gps, "./exports/sl19gps.rds")
+
+```
+
+## Clean and re-export
+```{r}
+sl19gps <- readRDS("./exports/sl19gps.rds")
+df <- sl19gps
+
+# columns of interest
+interestingColumns <- c("hv000","hv001","hv006","hv007","hv010","hv011","hv012","hv013","hv014","hv024","hv025","hv040","hv045c","hv201","hv204","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv216","hv217","hv219","hv220","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv245","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv270","hv271","hv270a","hv271a","hml1")
+gpsColumns <- c("LATNUM", "LONGNUM", "geometry", "ALT_DEM", "DATUM", "DHSREGNA", "ADM1NAME", "DHSID")
+keepColumns <- c(interestingColumns, gpsColumns)
+
+# filter down columns
+df <- df[,keepColumns]
+
+# filter out 0 coordinates
+df <- filter(df, LATNUM != 0)
+
+# re-export
+sl19clean <- df
+saveRDS(sl19clean, "./exports/sl19clean.rds")
+```
+
+## Create Maps of Variables
+```{r}
+
+# Dropping all data with coordinates (0,0) 
+plottable_df <- filter(sl19gps, LATNUM > 0)
+
+# This is turning hv206 from"haven-labelled' class to numeric for compatability with geom_point function.
+plottable_df$hv206 <- as.factor(plottable_df$hv206)
+
+ggplot(data = regions) +
+    geom_sf() +
+    geom_point(data=plottable_df, aes(x=LONGNUM, y=LATNUM, color=hv206, alpha=0.3)) +
+    scale_color_manual(values = c("1" = "yellow", "0" = "white"))+
+    labs(color="Access to Electricity")+ 
+    ggtitle('Household Access to Electricity in Sierra Leone') + 
+    theme_minimal()+
+    ggspatial::annotation_scale()+
+    ggspatial::annotation_north_arrow(location = "tr", which_north = "true") +
+    labs(y= "", x = "") +
+    theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+    theme(plot.title = element_text(size = 20))
+    
+    # We have a bit of a problem in that each cluster represents several families, so most likely we are just seeing one family per cluster which isn't necessarily representative. Perhaps a spatial interpolation method map would give a better overall impression of electricity availability.
+    
+    plottable_df$hv271 <- as.numeric(plottable_df$hv271)
+    
+    ggplot(data = regions) +
+    geom_sf() +
+    geom_point(data=plottable_df, aes(x=LONGNUM, y=LATNUM, color=(hv271))) +
+       scale_color_gradient(low="white",
+                     high="darkgreen", space ="Lab")+ 
+    labs(color="Wealth Level")+ 
+    ggtitle('Household Wealth Distribution in Sierra Leone') + 
+    theme_minimal()+
+    ggspatial::annotation_scale()+
+    ggspatial::annotation_north_arrow(location = "tr", which_north = "true") +
+    labs(y= "", x = "") +
+    theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+    theme(plot.title = element_text(size = 20))
+```
+
+## Summarize data
+
+```{r}
+# import data
+sl19keep <- readRDS("./exports/sl19clean.rds")
+```
+
+Histograms
+```{r}
+# histograms
+
+hist(sl19keep$hv040, main="Altitude (m)") # altitude in meters
+plot(sl19keep$hv024, main="Region") # region
+plot(sl19keep$hv045c, main="Native Language")
+
+ilg_hist <- function(x, bins, label, fill) {
+  return(ggplot() + 
+      geom_histogram(aes(x), color="black", fill=fill, bins=bins) +
+      xlab(label) +
+      ylab("Count") +
+      ggtitle(label) +
+      theme_bw()
+  )
+}
+
+
+household <- ilg_hist(sl19keep$hv012, 33, "# Household Members", "purple")
+household
+women <- ilg_hist(sl19keep$hv010, 11, "# Women aged 15-49", "purple")
+women
+men <- ilg_hist(sl19keep$hv011, 11, "# Men aged 15-49", "purple")
+men
+children <- ilg_hist(sl19keep$hv014, 10, "# Children under 5 y.o.", "purple")
+children
+
+altitude <- ilg_hist(sl19keep$hv040, 30, "Altitude", "blue")
+altitude
+
+timetowater <- ilg_hist(sl19keep$hv204, 30, "Time to Water Source", "darkgreen")
+timetowater # filter out high "unknowns"
+```
+
+Bar Charts
+```{r}
+
+ilg_bar <- function(x, label, fill) {
+  return(ggplot() + 
+      geom_bar(aes(x), color="black", fill=fill) +
+      xlab(label) +
+      ylab("Count") +
+      ggtitle(label) +
+      theme_bw()
+  )
+}
+
+region <- ilg_bar(sl19keep$hv024, "Region", "blue")
+region
+
+language <- ilg_bar(sl19keep$hv045c, "Language", "blue")
+language
+
+watersource <- ilg_bar(sl19keep$hv201, "Source of Drinking Water", "darkgreen")
+watersource
+
+
+```
+
+Pie Charts
+```{r}
+# pie charts of asset ownership
+elec <- sum(sl19keep$hv206 == 1)
+radio <- sum(sl19keep$hv207 == 1)
+tele <- sum(sl19keep$hv208 == 1)
+fridge <- sum(sl19keep$hv209 == 1)
+bicycle <- sum(sl19keep$hv210 == 1)
+motorcycle <- sum(sl19keep$hv211 == 1)
+car <- sum(sl19keep$hv212 == 1)
+
+n <- nrow(sl19keep)
+
+pie(c(elec, n-elec), labels = c("Yes", "No"), main="Have Electricity", col=c("purple","white"))
+pie(c(radio, n-radio), labels = c("Yes", "No"), main="Have Radio", col=c("purple","white"))
+pie(c(tele, n-tele), labels = c("Yes", "No"), main="Have Television", col=c("purple","white"))
+pie(c(fridge, n-fridge), labels = c("Yes", "No"), main="Have Fridge", col=c("purple","white"))
+pie(c(bicycle, n-bicycle), labels = c("Yes", "No"), main="Have Bicycle", col=c("purple","white"))
+pie(c(motorcycle, n-motorcycle), labels = c("Yes", "No"), main="Have Motorcycle", col=c("purple","white"))
+pie(c(car, n-car), labels = c("Yes", "No"), main="Have Car", col=c("purple","white"))
+```
+
+Multivariable Bar Chart
+```{r}
+# bar chart of asset ownership
+counts <- c(elec,radio,tele,fridge,bicycle,motorcycle,car)
+labels <- c("Electricity", "Radio", "Television", "Fridge", "Bicycle", "Motorcyle", "Car")
+assets <- data.frame(asset=labels, count=counts)
+ggplot(assets) +
+  geom_bar(aes(y=count, x=asset), fill="purple", stat='identity') +
+  ggtitle('Asset Ownership')+
+  xlab('Asset') +
+  ylab('Count') +
+  ylim(0,15000) + 
+  theme_bw() +
+  scale_color_brewer(palette="Dark2")+
+  geom_hline(yintercept=n, style="dashed", color="gray")
+```
+
+
+## Kriging/Variogram
+```{r}
+# In this block I am projecting the cluster points to a WGS84 projection for analysis
+
+sl19clean <- readRDS("./exports/sl19clean.rds")
+df <- sl19clean
+
+# project the cluster points
+coordinates(df) = c('LONGNUM', 'LATNUM')
+proj4string(df) = CRS("+proj=longlat +datum=WGS84")
+plottable_df_projected<- spTransform(df, CRS("+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"))
+
+saveRDS(plottable_df_projected, "./exports/plottable_df_projected.rds")
+```
+
+```{r}
+# In this block I am projecting the regions polygons to a WGS84 projection for analysis
+
+regions <- readRDS("./exports/regions.rds")
+# project the region boundaries
+regions_oultine <-as(regions, "Spatial")
+
+proj4string(regions_oultine) = CRS("+proj=longlat +datum=WGS84")
+regions_projected<- spTransform(regions_oultine, CRS("+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"))
+
+# In this next chunk I am making the grid for IDW and Kriging
+
+# Making grid
+kriging_grid <- SpatialPixels(SpatialPoints(makegrid(regions_projected, n=15000)), proj4string = proj4string(regions_projected))
+# Applying grid to Sierra Leone
+kriging_grid <- kriging_grid[regions_projected,]
+plot(kriging_grid)
+
+saveRDS(kriging_grid, "./exports/kriging_grid.rds")
+saveRDS(regions_projected, "./exports/regions_projected.rds")
+```
+```{r}
+plottable_df_projected <- readRDS("./exports/plottable_df_projected.rds")
+df <- plottable_df_projected
+
+kriging_grid <- readRDS("./exports/kriging_grid.rds")
+
+# Inverse distance weighting
+hv271.idw <- idw(formula = hv271 ~ 1, df, kriging_grid, idp = 2, nmax = 100)
+plot(hv271.idw)
+
+#Plotting variogram for sample data
+# sample variogram based on Cressie method, it is often used to account for outliers
+p.vgm <- variogram(hv271 ~ 1, df, cressie=T)
+plot(p.vgm, type='l')
+
+# Reference block to see variogram model options
+vgm()
+show.vgms()
+
+# Initial estimates for nugget, sill, and range (4,300,000,000; 7,900,000,000; 60,000)
+
+saveRDS(hv271.idw, "./exports/hv271_krig_plot.rds")
+
+# Fitting sample variogram to a model
+
+initModel = vgm(psill = 7900000000, "Sph", range = 60000, nugget = 4300000000)
+p.fitSph <- fit.variogram(p.vgm, model = initModel)
+plot(p.vgm, pch = 20, cex = 1.5, col = "black", ylab = "Semivariance", xlab = "Distance (m)", model = p.fitSph)
+
+Model = vgm(psill = 7900000000, "Exp", range = 60000, nugget = 4300000000)
+p.fitExp <- fit.variogram(p.vgm, model = Model)
+plot(p.vgm, pch = 20, cex = 1.5, col = "black", ylab = "Semivariance", xlab = "Distance (m)", model = p.fitExp)
+
+Model2 = vgm(psill = 7900000000, "Lin", range = 60000, nugget = 4300000000)
+p.fitMat <- fit.variogram(p.vgm, model = Model2)
+plot(p.vgm, pch = 20, cex = 1.5, col = "black", ylab = "Semivariance", xlab = "Distance (m)", model = p.fitMat)
+
+# After trying a few variograms, it appears Spherical is the best model
+
+# Kriging model
+
+# This line below is to remove duplicate locations as described here: https://gis.stackexchange.com/questions/222192/r-gstat-krige-covariance-matrix-singular-at-location-5-88-47-4-0-skipping
+df <- df[-zerodist(df)[,1],] 
+
+krigSph <- krige(hv271 ~ 1, df, kriging_grid, model = p.fitSph)
+plot(krigSph)
+
+saveRDS(krigSph, "./exports/kriging_model1.rds")
+
+# Evaluating accuracy with Cross Validation - commented out to run faster, but can be uncommented and run to evaluate
+
+# cvKriging<-krige.cv(hv271~1, df, kriging_grid, model=p.fitSph)
+# # get the RMSE
+# rmse<-sqrt(mean(cvKriging$residual^2))
+# rmse
+# 
+cvKriging<-krige.cv(hv271~1, df, kriging_grid, model=p.fitExp)
+# get the RMSE
+rmse2<-sqrt(mean(cvKriging$residual^2))
+rmse2
+
+# It turns ou the p.fitExp fits better than the p.fitSph so I am now going to make a kriging with p.fitExp
+
+krigExp <- krige(hv271 ~ 1, df, kriging_grid, model = p.fitExp)
+plot(krigExp, main="Spatial Inter")
+
+saveRDS(krigSph, "./exports/better_kriging_model.rds")
+
+```
+
+
+## Convert point data into area data for Spatial Regression
+```{r}
+# reread in dataframe
+sl19clean <- readRDS("./exports/sl19clean.rds")
+df <- sl19clean
+
+
+# define columns to keep
+assetColumns <- c("hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
+gpsColumns <- c("LATNUM", "LONGNUM", "ALT_DEM")
+srColumns <- c(assetColumns, gpsColumns)
+
+
+# filter big data frame to just columns needed for this
+df <- df[,srColumns]
+
+# convert all columns to numeric
+df <- as.data.frame(lapply(df, as.numeric)) 
+
+# add geometry back in
+df$geometry <- sl19clean$geometry
+
+# filter out "unknown" or "missing" values from survey
+df <- na.omit(df) # remove NA values
+df <- df %>% filter(
+  hv246a < 95 &
+  hv246b < 95 &
+  hv246c < 95 &
+  hv246d < 95 &
+  hv246e < 95 &
+  hv246f < 95
+)
+
+
+# remove geometry again
+geometry <- df$geometry
+df = select(df, -geometry)
+
+# aggregate data to cluster level, keep means of other variables
+df <- aggregate.data.frame(df, list(lat = df$LATNUM, lon = df$LONGNUM), mean)
+sl19clusters <- df
+
+# read in country and regions
+regions <- readRDS("./exports/regions.rds")
+country <- readRDS("./exports/country.rds")
+
+# remove the islands from the polygon list
+country_multi <- as.data.frame(st_cast(country$geometry, "POLYGON"))
+country_multi$area_sqm <- st_area(country_multi$geometry)
+sl.sf <- country_multi[1,"geometry"]
+
+# convert the countries shapefile (sf) into SpatialPolygon (sp)
+country.sp <- as(sl.sf, 'Spatial')
+
+# create voronoi tesselation plot
+ggplot(df) + 
+  ggvoronoi::geom_voronoi(aes(lon, lat, fill=hv271), outline = country.sp) + 
+  scale_fill_gradient(low="white", high="blue") +
+  geom_sf(data=regions, fill=NA, color="black") +
+  ggtitle("Voronoi Tesellation of Sierra Leone")
+
+# create voronoi tesselation SpatialPolygon
+areas.sp <- ggvoronoi::voronoi_polygon(df, x="lon", y="lat", outline = country.sp)
+
+# convert voronoi SpatialPolygon to a shapefile
+areas.sf <- sf::st_as_sf(areas.sp)
+
+# # remove areas with multiple polygons
+# areas.sf$n_polygons <- lapply(areas.sf$geometry, length)
+# areas.sf <- filter(areas.sf, n_polygons == 1)
+
+# convert list of polygons into individual polygons
+# geometry <- areas.sf$geometry
+# geometry2 <- st_cast(geometry, "POLYGON")
+# areas.sf$geometry <- geometry2
+# areas.sf$geometry3 <- lapply(areas.sf$geometry, unlist)
+
+# plot results
+plot(areas.sf)
+ggplot(data=areas.sf) +
+  geom_sf(aes(fill=hv271)) +
+  scale_fill_gradient(low="white", high="darkgreen") +
+  ggtitle("Mean Wealth Index across Sierra Leone ")
+
+ggplot(data=areas.sf) +
+  geom_sf(aes(fill=hv206*100)) +
+  scale_fill_gradient(low="white", high="gold") +
+  ggtitle("% with Electricity Access in Sierra Leone")
+
+# map just areas and points
+ggplot() +
+  geom_sf(data=areas.sf) +
+  geom_point(data=plottable_df, aes(x=LONGNUM, y=LATNUM), cex=0.5) +
+  ggtitle("Thiessen Polygons of DHS 2019 Clusters in Sierra Leone")
+
+cor(areas.sf$hv206, areas.sf$hv271, method = "pearson")
+
+
+# export area
+saveRDS(areas.sf, "./exports/areas.rds")   
+saveRDS(sl19clusters, "./exports/sl19clusters.rds")   
+
+```
+
+## Linear Regression
+
+### Cut Down Dataframe to Numeric Columns
+```{r}
+# import dataframe with shape file
+sl19areas <- readRDS("./exports/areas.rds")
+
+# keep just asset columns 
+assetColumns <- c("hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
+sl19num <- sl19areas[,assetColumns]
+
+# remove rows that have no neighbors
+df <- df[-c(47, 68), ]
+
+# save down dataframe
+saveRDS(sl19num, "./exports/sl19num.rds")
+```
+
+### Basic Multiple Linear Regression
+```{r}
+# read in numeric dataframe
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+
+# process df for lm
+geometry <- df$geometry
+df <- df %>% st_drop_geometry()
+
+# do with no variables
+lm.mean <- lm(hv271 ~ 1, data=df)
+summary(lm.mean)
+# mean = 623
+rmse.lm.mean <- sqrt(mean(residuals(lm.mean)^2))
+rmse.lm.mean # 88899.5
+
+# map just areas and points
+ggplot() +
+  geom_sf(data=areas.sf, fill="darkgreen", color="black", alpha=0.5) +
+  ggtitle("Null Model of Wealth Index across Sierra Leone") +
+  theme_void()
+
+# basic linear model
+lm.basic <- lm(hv271 ~ ., data=df)
+summary(lm.basic)
+rmse.lm.basic <- sqrt(mean(residuals(lm.basic)^2))
+rmse.lm.basic # 19785.72
+# adjusted R-squared is 0.9484
+# r-squared is 0.9505
+
+# define neighbors & weights
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+spdep::lm.morantest(lm.basic, queen_weights)
+
+# try cross validation
+set.seed(44)
+df <- sl19num
+geometry <- df$geometry
+df <- df %>% st_drop_geometry()
+cv <- trainControl(method = 'cv', number = 5)
+lm.cv <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
+print(lm.cv) # RMSE 21674
+rmse.lm.cv <- sqrt(mean(residuals(lm.cv)^2))
+rmse.lm.cv # 19785
+
+# try again without variables p > 0.5
+sigColumns <- c("hv206","hv207","hv208","hv209","hv210","hv212","hv221","hv227","hv243a","hv243b","hv243c","hv243d","hv243e","hv246c","hv246d","hv246e","hv246f","hv247", "hv271")
+df <- df[,sigColumns]
+lm.improved <- lm(hv271 ~ ., data=df)
+summary(lm.improved)
+# adjusted R-squared goes up to 0.9487
+# r-squared stays up at 0.9504
+
+# try again without variables p > 0.05
+vsigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- df[,vsigColumns]
+lm.vimproved <- lm(hv271 ~ ., data=df)
+summary(lm.vimproved)
+rmse.lm.vimproved <- sqrt(mean(residuals(lm.vimproved)^2))
+rmse.lm.vimproved # 20049.49
+# adjusted R-squared goes up to 0.9517
+# r-squared goes up at 0.9531!
+# much better model
+
+# try cross validation again with smaller model
+set.seed(44)
+vsigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- df[,vsigColumns]
+lm.cv.improved <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
+print(lm.cv.improved) # RMSE 20902
+rmse.lm.cv.improved <- sqrt(mean(residuals(lm.cv.improved)^2))
+rmse.lm.cv.improved # 20049.49
+
+# map null model
+ggplot() +
+  geom_sf(data=areas.sf, fill="darkgreen", color="black", alpha=0.5) +
+  ggtitle("Null Model of Wealth Index across Sierra Leone")
+
+# map null model residuals
+df$geometry <- geometry
+df$residuals <- residuals(lm.mean)
+ggplot(df) +
+  geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
+  scale_fill_gradient2() +
+  ggtitle("Map of Null Model Residuals")
+
+# map residuals
+df$geometry <- geometry
+df$residuals <- residuals(lm.basic)
+ggplot(df) +
+  geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
+  scale_fill_gradient2() +
+  ggtitle("Map of Linear Model Residuals")
+
+# histogram of residuals
+ggplot(df) +
+  geom_histogram(aes(residuals), fill="darkgreen", bins = 20)
+
+
+# save down significant columns df
+df$geometry <- geometry
+sl19lm <- df
+saveRDS(sl19lm, "./exports/sl19lm.rds")
+```
+
+### Linear Regression with a Train/Test Split
+```{r}
+# read in data
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+
+# split train / test data
+f = 4/5
+n = nrow(df)
+set.seed(44)
+train <- sample(n, n*f, replace=FALSE)
+traindf <- df[train,]
+testdf <- df[-train,]
+
+# prep for lm
+geometry <- testdf$geometry
+traindf <- traindf %>% st_drop_geometry()
+testdf <- testdf %>% st_drop_geometry()
+df <- traindf
+
+# run lm
+lm.train <- lm(hv271 ~ ., data=df)
+summary(lm.train)
+pred.lm <- predict(object = lm.train, newdata = testdf)
+rmse.lm <- rmse(actual = testdf$hv271, predicted = pred.lm )
+print(rmse.lm) # RMSE 22393 (worse than CV)
+
+# try a test/train split again with fewer columns
+vsigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- traindf[,vsigColumns]
+testdf <- testdf[,vsigColumns]
+lm.train.improved <- lm(hv271 ~ ., data=df)
+summary(lm.train.improved) # R2 0.9531
+pred.lm.improved <- predict(object = lm.train.improved, newdata = testdf)
+rmse.lm.improved <- rmse(actual = testdf$hv271, predicted = pred.lm.improved )
+print(rmse.lm.improved) # RMSE 22619 (not better)
+
+# try a test/train split with few columns and cross validation
+df <- traindf[,vsigColumns]
+testdf <- testdf[,vsigColumns]
+cv <- trainControl(method = 'cv', number = 5)
+lm.cv.train <- train(hv271 ~ ., data=df, method="lm", trControl = cv)
+print(lm.cv.train) # RMSE 20651, R-squared 0.9487
+pred.lm.cv.train <- predict(object = lm.cv.train, newdata = testdf)
+rmse.lm.cv.train <- rmse(actual = testdf$hv271, predicted = pred.lm.cv.train )
+print(rmse.lm.cv.train) # RMSE 22619.46 (not better - exactly the same as 80/20)
+```
+
+## Spatial Regression
+
+### Spatial Lag Model
+```{r}
+# get same data as for regression models
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+geometry <- df$geometry
+
+# define neighbors & weights
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+
+# null spatial lag model
+df <- df %>% st_drop_geometry()
+lm.lag.null <- lagsarlm(hv271 ~ 1, data=df, queen_weights, zero.policy = TRUE)
+summary(lm.lag.null)
+rmse.lm.lag.null <- sqrt(mean(residuals(lm.lag.null)^2))
+rmse.lm.lag.null # 45131
+
+# spatial lag model
+lm.lag <- lagsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.lag)
+# AIC 12040 instead of 12104 for lm
+# ro = 0.1864, p-value << 0.05
+
+# pull out significant columns from spatial model
+spSigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+# same as vsigColumns from non-spatial model
+
+# rerun model with fewer columns
+df <- df[,spSigColumns]
+lm.lag.improved <- lagsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.lag.improved)
+rmse.lm.lag.improved <- sqrt(mean(residuals(lm.lag.improved)^2))
+rmse.lm.lag.improved # 18807.81
+# AIC 12038 instead of 12100 for lm
+# ro = 0.18041, p-value << 0.05
+
+# map residuals
+df$geometry <- geometry
+df$residuals <- residuals(lm.lag.improved)
+ggplot(df) +
+  geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
+  scale_fill_gradient2() +
+  ggtitle("Map of Spatial Lag Model Residuals")
+
+# histogram of residuals
+ggplot(df) +
+  geom_histogram(aes(residuals), fill="purple", bins = 15)
+```
+
+### Spatial Error Model
+```{r}
+# get same data as for regression models
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+geometry <- df$geometry
+df <- st_drop_geometry(df)
+
+# define neighbors & weights
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+
+# try spatial error model
+lm.err <- errorsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.err)
+# AIC 12030 instead of 12104 for lm
+# lambda = 0.53617, p-value << 0.05
+
+# pull out significant columns from spatial model
+spSigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+# same as vsigColumns from non-spatial model
+
+# rerun model with fewer columns
+df <- df[,spSigColumns]
+lm.err.improved <- errorsarlm(hv271 ~ ., data=df, queen_weights, zero.policy = TRUE)
+summary(lm.err.improved)
+rmse.lm.err.improved <- sqrt(mean(residuals(lm.err.improved)^2))
+rmse.lm.err.improved # 18228.15
+# AIC 12030 instead of 12100 for lm
+# lamda = 0.5018, p-value << 0.05
+
+# map residuals
+df$geometry <- geometry
+df$residuals <- residuals(lm.err.improved)
+ggplot(df) +
+  geom_sf(aes(fill=residuals, geometry=geometry), color="transparent") +
+  scale_fill_gradient2() +
+  ggtitle("Map of Spatial Error Model Residuals")
+
+# histogram of residuals
+ggplot(df) +
+  geom_histogram(aes(residuals), fill="blue", bins = 15)
+```
+### Run Significance Tests
+```{r}
+# read in lm dataframe
+sl19lm <- readRDS("./exports/sl19lm.rds")
+df <- sl19lm
+df <- df[-c(47, 68), ] # try removing regions with no neighbors
+geometry <- df$geometry
+df = select(df, -geometry)
+
+# define neighbors & weights
+queen_neighbors <- spdep::poly2nb(geometry)
+queen_weights <- spdep::nb2listw(queen_neighbors, zero.policy = TRUE)
+
+# basic linear model
+lm.basic <- lm(hv271 ~ ., data=df)
+
+# run lm tests
+lmtests <- lm.LMtests(lm.basic, listw=queen_weights, test="all")
+summary(lmtests)
+## all very significant! 
+
+# statistic parameter      p.value    
+# LMerr     77.846         1 < 2.2e-16 ***
+# LMlag     65.565         1 5.551e-16 ***
+# RLMerr    41.468         1 1.198e-10 ***
+# RLMlag    29.186         1 6.574e-08 ***
+
+# RLMerr has a p-value 600X smaller than RLM lag, so we'll go with the spatial error model!
+# I guess this tells us that there's sysStematic bias in the errors that we're not accounting for. Likely from ommitted variables....probably the categorical variables that I wasn't able to include.
+```
+
+### Geographically Weighted Regression
+```{r}
+# import sf dataframe 
+sl19num <- readRDS("./exports/sl19num.rds")
+df <- sl19num
+
+# cut down to significant columns
+spSigColumns <- c("hv206","hv207","hv208","hv210","hv212","hv227","hv243a","hv243d","hv246c","hv246d","hv246f","hv247", "hv271")
+df <- df[,spSigColumns]
+
+# convert to a spatial polygon df
+df.sp <- as(df, "Spatial")
+
+# find the right bandwidth for gwr
+bw <- bw.gwr(hv271 ~ ., data = df.sp, adaptive=T)
+bw # 385
+
+# run gwr
+lm.gwr <- gwr.basic(hv271 ~ ., data=df.sp, bw=bw, kernel="gaussian", adaptive=TRUE)
+lm.gwr
+
+# Map GWR Coefficients Across the Country
+
+# electricity
+df$gwr_hv206 <- lm.gwr$SDF$hv206
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv206)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Electricity Coefficients")
+# this means that electricity is a better predictor of wealth the farther we get from Freetown
+
+# radio
+df$gwr_hv207 <- lm.gwr$SDF$hv207
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv207)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Radio Coefficients")
+
+# tv
+df$gwr_hv208 <- lm.gwr$SDF$hv208
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv208)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR TV Coefficients")
+
+# mobile phone
+df$gwr_hv243a <- lm.gwr$SDF$hv243a
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv243a)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Mobile Phone Coefficients")
+
+# horses / donkeys / mules
+df$gwr_hv246c <- lm.gwr$SDF$hv246c
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv246c)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Horse/Donkey/Mule Coefficients")
+
+# goats
+df$gwr_hv246d <- lm.gwr$SDF$hv246d
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv246d)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Goats Coefficients")
+# woah, owning goats means you're poor! But more so in the more urban, western region
+
+# chickens
+df$gwr_hv246f <- lm.gwr$SDF$hv246f
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv246f)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Chicken Coefficients")
+# woah, very negatively correlated with wealth! everywhere.
+
+# bank account
+df$gwr_hv247 <- lm.gwr$SDF$hv247
+ggplot(data=df) +
+    geom_sf(aes(fill=gwr_hv247)) +
+    scale_fill_gradient2() +
+    ggtitle("GWR Bank Account Coefficients")
+
+```
+
+## Decision Trees
+
+```{r}
+# read in data
+sl19clean <- readRDS("./exports/sl19clean.rds")
+df <- sl19clean
+
+# filter down to columns of interest
+dTreeCols <- c("hv010","hv011","hv012","hv014","hv025","hv040","hv045c","hv201","hv204","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv216","hv220","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv246","hv246a","hv246b","hv246c","hv246d","hv246e","hv246f","hv247","hv271")
+df <- sl19clean[,dTreeCols]
+
+# clean data
+df <- na.omit(df)
+dTreeFactors <- c("hv025","hv045c","hv201","hv205","hv206","hv207","hv208","hv209","hv210","hv211","hv212","hv213","hv214","hv215","hv221","hv226","hv227","hv230a","hv237","hv241","hv243a","hv243b","hv243c","hv243d","hv243e","hv244","hv246","hv247")
+df <- df %>% mutate_at(dTreeFactors, as.factor)
+str(df)
+
+# split into test and train data
+f = 4/5
+n = nrow(df)
+set.seed(44)
+
+# random sample without replacement
+train <- sample(n, n*f, replace=FALSE)
+traindf <- df[train,]
+testdf <- df[-train,]
+
+# Decision Tree with 5-Fold Cross Validation
+cv <- trainControl(method = 'cv', number = 5)
+dt1 <- train(hv271 ~ ., data=df, method="rpart", trControl = cv)
+print(dt1)
+rpart.plot(dt1$finalModel, main="Decision Tree with 5-Fold Cross Validation")
+pred1 <- predict(object = dt1, newdata = testdf)
+rmse1 <- rmse(actual = testdf$hv271, predicted = pred1 )
+rmse1
+
+## DTree without Cross Validation (manually set cp=0.005) 
+cp2 <- 0.005
+dt2 <- rpart(hv271 ~ ., data = traindf, cp=cp2, method="anova")
+summary(dt2)
+rpart.plot(dt2, extra=1, main="Decision Tree with cp=0.005")
+pred2 <- predict(object = dt2, newdata = testdf)
+rmse2 <- rmse(actual = testdf$hv271, predicted = pred2 )
+rmse2
+dt2$variable.importance
+
+## Deeper DTree without Cross Validation (manually set cp=0.001) for more depth
+cp3 <- 0.001
+dt3 <- rpart(hv271 ~ ., data = traindf, cp=cp3, method="anova")
+summary(dt3)
+rpart.plot(dt3, extra=1, main="Decision Tree with cp=0.001")
+pred3 <- predict(object=dt3, newdata = testdf)
+rmse3 <- rmse(actual=testdf$hv271, predicted = pred3 )
+rmse3
+dt3$variable.importance
+
+df2 <- data.frame(imp = dt2$variable.importance)
+df3 <- df2 %>% 
+  tibble::rownames_to_column() %>% 
+  dplyr::rename("variable" = rowname) %>% 
+  dplyr::arrange(imp) %>%
+  dplyr::mutate(variable = forcats::fct_inorder(variable))
+ggplot2::ggplot(df3) +
+  geom_col(aes(x = variable, y = imp),
+           col = "black", fill="darkgreen", show.legend = F) +
+  coord_flip() +
+  scale_fill_grey() +
+  theme_bw()
+```
+
